@@ -309,7 +309,29 @@ class MesonpyMetaFinder(importlib.abc.MetaPathFinder):
         if self._build_path in os.environ.get(MARKER, '').split(os.pathsep):
             return None
         tree = self._rebuild()
-        return find_spec(fullname, tree)
+        spec = find_spec(fullname, tree)
+        if spec is not None and spec.loader is None:
+            search_locations = list(spec.submodule_search_locations or [])
+            try:
+                finder_index = sys.meta_path.index(self)
+                other_finders = sys.meta_path[finder_index + 1:]
+            except ValueError:
+                other_finders = [f for f in sys.meta_path if f is not self]
+            for other_finder in other_finders:
+                try:
+                    find_spec_fn = other_finder.find_spec
+                except AttributeError:
+                    continue
+                other_spec = find_spec_fn(fullname, path, target)  # type: ignore[arg-type]
+                if other_spec is not None:
+                    if other_spec.loader is not None:
+                        return other_spec
+                    if other_spec.submodule_search_locations:
+                        for loc in other_spec.submodule_search_locations:
+                            if loc not in search_locations:
+                                search_locations.append(loc)
+            spec.submodule_search_locations = search_locations
+        return spec
 
     def _work_to_do(self, env: dict[str, str]) -> bool:
         if sys.platform == 'win32':

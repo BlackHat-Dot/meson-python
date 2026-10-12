@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: MIT
 
+import importlib
 import io
 import os
 import pathlib
@@ -404,3 +405,77 @@ def test_editable_reconfigure_error(package_purelib_and_platlib, tmp_path):
 def test_install_data(venv, editable_install_data, tmp_path):
     venv.pip('install', os.fspath(editable_install_data))
     venv.python('-c', 'import package')
+
+
+@pytest.mark.parametrize('first,second', [('main', 'dep'), ('dep', 'main')])
+def test_editable_namespace_package(tmp_path, monkeypatch, first, second):
+    site_packages = tmp_path / 'site-packages'
+    dep_dir = site_packages / 'test_ns' / 'dep'
+    dep_dir.mkdir(parents=True)
+    (dep_dir / '__init__.py').write_text('VALUE = "dep"')
+
+    src_dir = tmp_path / 'src' / 'test_ns' / 'main'
+    src_dir.mkdir(parents=True)
+    (src_dir / '__init__.py').write_text('VALUE = "main"')
+
+    tree = _editable.Node()
+    tree[('test_ns', 'main', '__init__.py')] = os.fspath(src_dir / '__init__.py')
+
+    finder = _editable.MesonpyMetaFinder('main', {'test_ns'}, os.fspath(tmp_path), ['ninja'])
+    monkeypatch.setattr(finder, '_rebuild', lambda: tree)
+
+    monkeypatch.syspath_prepend(os.fspath(site_packages))
+    monkeypatch.setattr(sys, 'meta_path', [finder, *sys.meta_path])
+    monkeypatch.setattr(sys, 'path_hooks', [finder._path_hook, *sys.path_hooks])
+
+    for mod in ['test_ns', 'test_ns.main', 'test_ns.dep']:
+        sys.modules.pop(mod, None)
+
+    mod1 = importlib.import_module(f'test_ns.{first}')
+    mod2 = importlib.import_module(f'test_ns.{second}')
+
+    assert mod1.VALUE == first
+    assert mod2.VALUE == second
+
+    ns = sys.modules['test_ns']
+    assert os.fspath(site_packages / 'test_ns') in list(ns.__path__)
+
+
+def test_editable_multiple_namespace_packages(tmp_path, monkeypatch):
+    site_packages = tmp_path / 'site-packages'
+    dep_dir = site_packages / 'shared_ns' / 'dep'
+    dep_dir.mkdir(parents=True)
+    (dep_dir / '__init__.py').write_text('VALUE = "dep"')
+
+    src1 = tmp_path / 'src1' / 'shared_ns' / 'pkg1'
+    src1.mkdir(parents=True)
+    (src1 / '__init__.py').write_text('VALUE = "pkg1"')
+    tree1 = _editable.Node()
+    tree1[('shared_ns', 'pkg1', '__init__.py')] = os.fspath(src1 / '__init__.py')
+
+    src2 = tmp_path / 'src2' / 'shared_ns' / 'pkg2'
+    src2.mkdir(parents=True)
+    (src2 / '__init__.py').write_text('VALUE = "pkg2"')
+    tree2 = _editable.Node()
+    tree2[('shared_ns', 'pkg2', '__init__.py')] = os.fspath(src2 / '__init__.py')
+
+    finder1 = _editable.MesonpyMetaFinder('pkg1', {'shared_ns'}, os.fspath(tmp_path / 'b1'), ['ninja'])
+    monkeypatch.setattr(finder1, '_rebuild', lambda: tree1)
+
+    finder2 = _editable.MesonpyMetaFinder('pkg2', {'shared_ns'}, os.fspath(tmp_path / 'b2'), ['ninja'])
+    monkeypatch.setattr(finder2, '_rebuild', lambda: tree2)
+
+    monkeypatch.syspath_prepend(os.fspath(site_packages))
+    monkeypatch.setattr(sys, 'meta_path', [finder2, finder1, *sys.meta_path])
+    monkeypatch.setattr(sys, 'path_hooks', [finder2._path_hook, finder1._path_hook, *sys.path_hooks])
+
+    for mod in ['shared_ns', 'shared_ns.dep', 'shared_ns.pkg1', 'shared_ns.pkg2']:
+        sys.modules.pop(mod, None)
+
+    mod_dep = importlib.import_module('shared_ns.dep')
+    mod_pkg1 = importlib.import_module('shared_ns.pkg1')
+    mod_pkg2 = importlib.import_module('shared_ns.pkg2')
+
+    assert mod_dep.VALUE == 'dep'
+    assert mod_pkg1.VALUE == 'pkg1'
+    assert mod_pkg2.VALUE == 'pkg2'
